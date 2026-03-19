@@ -4,6 +4,7 @@ section .text
     global _start
     extern long_mode_start
 _start:
+    cli
     mov esp, stack_top
 
     call check_multiboot
@@ -127,9 +128,9 @@ section .bss
     stack_top:
 section .rodata
     gdt64:
-        dq 0 ; 0 entry
+        dq 0                                                    ; null
     .code_segment: equ $ - gdt64
-        dq (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) ; code segment
+        dq (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53)     ; code
     .pointer:
         dw $ - gdt64 - 1
         dq gdt64
