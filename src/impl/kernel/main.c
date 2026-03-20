@@ -1,6 +1,24 @@
 #include "print.h"
 #include "io.h"
 #include "pic.h"
+#include "string.h"
+#include "vfs.h"
+#include "kmemory.h"
+const char scancode_to_ascii[128] = {
+    0, 0, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', 0,
+    0, 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
+    0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
+    0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0,
+    '*', 0, ' '
+};
+const char scancode_to_ascii_shift[128] = {
+    0, 0, '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '_', '+', 0,
+    0, 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '{', '}', '\n',
+    0, 'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ':', '"', '~',
+    0, '|', 'Z', 'X', 'C', 'V', 'B', 'N', 'M', '<', '>', '?', 0,
+    '*', 0, ' '
+};
+static int shift_held = 0;
 struct idt_entry {
     uint16_t offset_low;    // lower 16 bits of handler address
     uint16_t selector;      // code segment selector (from GDT)
@@ -10,13 +28,10 @@ struct idt_entry {
     uint32_t offset_high;   // upper 32 bits of handler address
     uint32_t zero;          // reserved
 };
-const char scancode_to_ascii[128] = {
-    0, 0, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', 0,
-    0, 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
-    0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
-    0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0,
-    '*', 0, ' '
-};
+struct idt_pointer {
+    uint16_t limit;
+    uint64_t base;
+} __attribute__((packed));
 struct idt_entry idt[256];
 void idt_set_entry(int index, uint64_t handler) {
     idt[index].offset_low  = handler & 0xFFFF;
@@ -27,21 +42,280 @@ void idt_set_entry(int index, uint64_t handler) {
     idt[index].offset_high = (handler >> 32) & 0xFFFFFFFF;
     idt[index].zero        = 0;
 }
-struct idt_pointer {
-    uint16_t limit;
-    uint64_t base;
-} __attribute__((packed));
-
+char input_buffer[256];
+int input_pos = 0;
 struct idt_pointer idtp = {
     .limit = sizeof(idt) - 1,
     .base  = (uint64_t)&idt
 };
+struct ColorEntry {
+    const char* name;
+    uint8_t value;
+};
+
+struct ColorEntry colors[] = {
+    {"black", 0}, {"blue", 1}, {"green", 2}, {"cyan", 3},
+    {"red", 4}, {"magenta", 5}, {"brown", 6}, {"gray", 7},
+    {"dgray", 8}, {"lblue", 9}, {"lgreen", 10}, {"lcyan", 11},
+    {"lred", 12}, {"pink", 13}, {"yellow", 14}, {"white", 15}
+};
+// load IDT from ASM
+extern void load_idt(struct idt_pointer* idtp);
+static int extended = 0;
+#define HISTORY_SIZE 16
+static char history[HISTORY_SIZE][256];
+static int history_count = 0;   // total commands ever
+static int history_pos = 0;     // current navigation position
+static int page_start = 0;      // which command the array starts at
+
+void history_load_page(int start) {
+    // read .ksh_history, find lines starting at 'start'
+    char* data;
+    int result = vfs_cat("/home/root/.ksh_history", &data);
+    if (result != 0 || data == NULL) return;
+    
+    int line = 0;
+    int loaded = 0;
+    int pos = 0;
+    
+    for (int i = 0; data[i] != '\0' && loaded < HISTORY_SIZE; i++) {
+        if (data[i] == '\n') {
+            if (line >= start) {
+                history[loaded][pos] = '\0';
+                loaded++;
+                pos = 0;
+            }
+            line++;
+        } else if (line >= start) {
+            history[loaded][pos++] = data[i];
+        }
+    }
+    page_start = start;
+}
+void cmd_color(char* name) {
+    for (int i = 0; i < 16; i++) {
+        if (strcmp(colors[i].name, name) == 0) {
+            print_set_color(colors[i].value, PRINT_COLOR_BLACK);
+            return;
+        }
+    }
+    print_str("Unknown color\n");
+}
+void cmd_reboot() {
+    uint8_t good = 0x02;
+    while (good & 0x02) {
+        good = inb(0x64);
+    }
+    outb(0x64, 0xFE);
+    struct idt_pointer null_idt = { .limit = 0, .base = 0 };
+    load_idt(&null_idt);
+    asm volatile("int $0x00");
+}
+void execute(char* input) {
+    char* commands[] = {"clear", "help", "echo", "uname", "color", "reboot", "panic", "rm", "cd", "ls", "mkdir", "touch", "cat", "pwd"};
+    const int num_commands = sizeof(commands) / sizeof(commands[0]);
+    char tokens[16][64];  // 16 tokens, each up to 64 chars
+    int token_count = 0;
+    int pos = 0;
+    for (int i = 0; i < 16; i++) {
+        tokens[i][0] = '\0';
+    }
+    for (int i = 0; input[i] != '\0'; i++) {
+        if (input[i] == ' ') {
+            tokens[token_count][pos] = '\0';
+            token_count++;
+            pos = 0;
+        } else {
+            tokens[token_count][pos] = input[i];
+            pos++;
+        }
+    }
+    tokens[token_count][pos] = '\0';
+    token_count++;
+    int redirect = 0;
+    char* redirect_file = NULL;
+    if (input[0] != '\0') {
+        strcpy(history[history_count % HISTORY_SIZE], input);
+        history_count++;
+        history_pos = history_count;
+        
+        char history_entry[256];
+        strcpy(history_entry, input);
+        strcat(history_entry, "\n");
+        vfs_write("/home/root/.ksh_history", history_entry, 1);
+    }
+    for (int i = 0; i < token_count; i++) {
+        if (strcmp(tokens[i], ">>") == 0 && i + 1 < token_count) {
+            redirect = 2;
+            redirect_file = tokens[i + 1];
+            token_count = i;
+            break;
+        } else if (strcmp(tokens[i], ">") == 0 && i + 1 < token_count) {
+            redirect = 1;
+            redirect_file = tokens[i + 1];
+            token_count = i;
+            break;
+        }
+    }
+    if (strcmp(tokens[0], "clear") == 0) {
+        print_clear();
+    } else if (strcmp(tokens[0], "echo") == 0) {
+        char output[512];
+        output[0] = '\0';
+        for (int i = 1; i < token_count; i++) {
+            if (i > 1) strcat(output, " ");
+            strcat(output, tokens[i]);
+        }
+        
+        if (redirect) {
+            vfs_write(redirect_file, output, redirect == 2);
+        } else {
+            print_str(output);
+            print_char('\n');
+        }
+    } else if (strcmp(tokens[0], "help") == 0) {
+        print_str("Commands: ");
+        for (int i = 0; i < num_commands; i++) {
+            print_str(commands[i]);
+            print_char(' ');
+        }
+        print_char('\n');
+    } else if (strcmp(tokens[0], "uname") == 0) {
+        print_str("KeyholeOS V0.1.1:beta\n");
+    } else if (strcmp(tokens[0], "reboot") == 0) {
+        cmd_reboot();
+    } else if (strcmp(tokens[0], "panic") == 0) {
+        print_str("Kernel panic - system halted\n");
+        volatile int x = 1 / 0;
+    } else if (strcmp(tokens[0], "color") == 0) {
+        if (token_count < 2) {
+            print_str("color takes 1 arguments (color <color>)\n");
+        } else {
+            cmd_color(tokens[1]);
+        }
+    } else if (strcmp(tokens[0], "pwd") == 0) {
+        print_str(vfs_pwd());
+        print_char('\n');
+    } else if (strcmp(tokens[0], "cd") == 0) {
+        if (token_count < 2) {
+            print_str("cd takes 1 arguments (cd <path>)\n");
+        } else {
+            int result = vfs_cd(tokens[1]);
+            if (result == -1) {
+                print_str("cd: no such file or directory: ");
+                print_str(tokens[1]);
+                print_char('\n');
+            } else if (result == -2) {
+                print_str("cd: not a directory: ");
+                print_str(tokens[1]);
+                print_char('\n');
+            }
+        }
+    } else if (strcmp(tokens[0], "rm") == 0) {
+        if (token_count < 2) {
+            print_str("rm takes 1 arguments (rm <path>)\n");
+        } else {
+            int result = vfs_rm(tokens[1]);
+            if (result == -1) {
+                print_str("rm: no such file or directory: ");
+                print_str(tokens[1]);
+                print_char('\n');
+            } else if (result == -2) {
+                print_str("rm: not a file (did you forget `-r`?): ");
+                print_str(tokens[1]);
+                print_char('\n');
+            }
+        }
+    } else if (strcmp(tokens[0], "cat") == 0) {
+        if (token_count < 2) {
+            print_str("cat takes 1 arguments (cat <path>)\n");
+            return;
+        }
+        char* data;
+        int result = vfs_cat(tokens[1], &data);
+        if (result == -1) {
+            print_str("cat: ");
+            print_str(tokens[1]);
+            print_str(": No such file or directory\n");
+        } else if (result == -2) {
+            print_str("cat: ");
+            print_str(tokens[1]);
+            print_str(": Is a directory\n");
+        } else if (data != NULL) {
+            print_str(data);
+            print_char('\n');
+        }
+    } else if (strcmp(tokens[0], "ls") == 0) {
+        int show_all = 0;
+        char* path = NULL;
+        for (int i = 1; i < token_count; i++) {
+            if (strcmp(tokens[i], "-a") == 0) show_all = 1;
+            else path = tokens[i];
+        }
+        struct Node* child = vfs_ls(path);
+        if (child == NULL && token_count > 1) {
+            struct Node* node = resolve_path(tokens[1]);
+            if (node == NULL) {
+                print_str("ls: cannot access '");
+                print_str(tokens[1]);
+                print_str("': No such file or directory\n");
+            }
+        } else {
+            uint8_t saved = color;
+            while (child != NULL) {
+                if (child->type == VFS_DIRECTORY) {
+                    print_set_color(PRINT_COLOR_BLUE, PRINT_COLOR_BLACK);
+                }
+                if (child->name[0] != '.' || show_all) {
+                    print_str(child->name);
+                    print_set_color(saved & 0x0F, saved >> 4);
+                    print_char(' ');
+                }
+                child = child->next_sibling;
+            }
+            print_char('\n');
+            color = saved;
+        }
+    } else if (strcmp(tokens[0], "mkdir") == 0) {
+        if (token_count < 2) {
+            print_str("mkdir: missing operand\n");
+        } else {
+            struct Node* result = vfs_mkdir(tokens[1]);
+            if (result == NULL) {
+                print_str("mkdir: cannot create directory '");
+                print_str(tokens[1]);
+                print_str("': No such file or directory\n");
+            }
+        }
+    } else if (strcmp(tokens[0], "touch") == 0) {
+        if (token_count < 2) {
+            print_str("touch: missing operand\n");
+        } else {
+            struct Node* result = vfs_touch(tokens[1]);
+            if (result == NULL) {
+                print_str("touch: cannot touch '");
+                print_str(tokens[1]);
+                print_str("': No such file or directory\n");
+            }
+        }
+    } else if (strcmp(tokens[0], "history") == 0) {
+        char* data;
+        int result = vfs_cat("/home/root/.ksh_history", &data);
+        if (result == 0 && data != NULL) {
+            print_str(data);
+        }
+    } else {
+        print_str("Unknown command: ");
+        print_str(input);
+        print_char('\n');
+    }
+}
+int caps_lock = 0;
 void interrupt_handler(uint64_t* regs) {
     uint64_t int_num = regs[15];
     // CPU exceptions (0-21)
 
     if (int_num < 32) {
-        print_clear();
         print_set_color(PRINT_COLOR_RED, PRINT_COLOR_BLACK);
         switch (int_num) {
             case 0:  print_str("DIVIDE BY ZERO"); break;
@@ -51,16 +325,96 @@ void interrupt_handler(uint64_t* regs) {
             case 14: print_str("PAGE FAULT"); break;
             default: print_str("CPU EXCEPTION"); break;
         }
-        while (1) {}
+        print_str("\nSystem halted. Reboot to continue.\n");
+        while (1) { asm volatile("hlt"); }
     }
-    // Hardware exceptions
     if (int_num == 33) {
-        print_set_color(PRINT_COLOR_WHITE, PRINT_COLOR_BLACK);
         const uint8_t scancode = inb(0x60);
+        if (scancode == 0x3A) {  // caps lock
+            caps_lock = !caps_lock;
+            pic_eoi(int_num - 32);
+            return;
+        }
+        if (scancode == 0x2A || scancode == 0x36) {
+            shift_held = 1;
+            pic_eoi(int_num - 32);
+            return;
+        }
+        if (scancode == 0xAA || scancode == 0xB6) {
+            shift_held = 0;
+            pic_eoi(int_num - 32);
+            return;
+        }
+        if (scancode == 0xE0) {
+            extended = 1;
+            pic_eoi(int_num - 32);
+            return;
+        }
+        if (scancode & 0x80) {
+            pic_eoi(int_num - 32);
+            return;
+        }
+
+        if (extended) {
+            extended = 0;
+            if (scancode == 0x48) {  // up arrow
+                if (history_pos > 0) {
+                    history_pos--;
+                    if (history_pos < page_start) {
+                        int new_start = history_pos - HISTORY_SIZE + 1;
+                        if (new_start < 0) new_start = 0;
+                        history_load_page(new_start);
+                    }
+                    while (input_pos > 0) { input_pos--; print_clear_char(); }
+                    strcpy(input_buffer, history[(history_pos - page_start) % HISTORY_SIZE]);
+                    input_pos = strlen(input_buffer);
+                    print_str(input_buffer);
+                }
+            } else if (scancode == 0x50) {  // down arrow
+                if (history_pos < history_count - 1) {
+                    history_pos++;
+                    if (history_pos >= page_start + HISTORY_SIZE) {
+                        history_load_page(history_pos);
+                    }
+                    while (input_pos > 0) { input_pos--; print_clear_char(); }
+                    strcpy(input_buffer, history[(history_pos - page_start) % HISTORY_SIZE]);
+                    input_pos = strlen(input_buffer);
+                    print_str(input_buffer);
+                } else if (history_pos == history_count - 1) {
+                    history_pos = history_count;
+                    while (input_pos > 0) { input_pos--; print_clear_char(); }
+                    input_buffer[0] = '\0';
+                    input_pos = 0;
+                }
+            }
+            pic_eoi(int_num - 32);
+            return;
+        }
         if (scancode < 128) {
-            char c = scancode_to_ascii[scancode];
-            if (c != 0) {
-                print_char(c);
+            char c = shift_held ? scancode_to_ascii_shift[scancode] : scancode_to_ascii[scancode];
+
+            if (caps_lock && c >= 'a' && c <= 'z') {
+                c -= 32;
+            } else if (caps_lock && c >= 'A' && c <= 'Z') {
+                c += 32;
+            }
+            if (scancode == 0x0E) {
+                if (input_pos > 0) {
+                    input_pos--;
+                    print_clear_char();
+                }
+            }
+            else if (c != 0) {
+                if (c == '\n') {
+                    input_buffer[input_pos] = '\0';
+                    print_char('\n');
+                    execute(input_buffer);
+                    input_pos = 0;
+                    print_prompt();
+                } else if (c != 0) {
+                    input_buffer[input_pos++] = c;
+                    print_char(c);
+                }
             }
         }
     }
@@ -108,8 +462,6 @@ extern void isr44();
 extern void isr45();
 extern void isr46();
 extern void isr47();
-// load IDT from ASM
-extern void load_idt(struct idt_pointer* idtp);
 
 void kernel_main() {
     outb(0x21, 0xFF);
@@ -159,6 +511,10 @@ void kernel_main() {
     idt_set_entry(47, (uint64_t)isr47);
     load_idt(&idtp);
     print_clear();
+    heap_init();
+    init_filesystem();
     print_set_color(PRINT_COLOR_YELLOW, PRINT_COLOR_BLACK);
-    print_str("Welcome to KeyholeOS");
+    print_str("Welcome to KeyholeOS\n");
+    print_set_color(PRINT_COLOR_WHITE, PRINT_COLOR_BLACK);
+    print_prompt();
 }

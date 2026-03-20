@@ -1,5 +1,6 @@
 #include "print.h"
-
+#include "vfs.h"
+#include "string.h"
 const static size_t NUM_COLS = 80;
 const static size_t NUM_ROWS = 25;
 
@@ -13,15 +14,24 @@ size_t col = 0;
 size_t row = 0;
 uint8_t color = PRINT_COLOR_WHITE | PRINT_COLOR_BLACK << 4;
 
-void clear_row(size_t row) {
+void clear_row(size_t curr_row) {
     struct Char empty = (struct Char) {
         character: ' ',
         color: color,
     };
 
     for (size_t col = 0; col < NUM_COLS; col++) {
-        buffer[col + NUM_COLS * row] = empty;
+        buffer[col + NUM_COLS * curr_row] = empty;
     }
+    col = 0;
+    row = 0;
+}
+void clear_col(size_t curr_row) {
+    struct Char empty = (struct Char) {
+        character: ' ',
+        color: color,
+    };
+    buffer[col + NUM_COLS * curr_row] = empty;
 }
 
 void print_clear() {
@@ -29,7 +39,32 @@ void print_clear() {
         clear_row(i);
     }
 }
-
+void print_prompt() {
+    uint8_t saved_color = color;
+    
+    print_set_color(PRINT_COLOR_GREEN, PRINT_COLOR_BLACK);
+    print_str("root@keyhole");
+    print_set_color(PRINT_COLOR_WHITE, PRINT_COLOR_BLACK);
+    print_str(":");
+    print_set_color(PRINT_COLOR_BLUE, PRINT_COLOR_BLACK);
+    
+    char* pwd = vfs_pwd();
+    if (strncmp(pwd, "/home/root", 10) == 0) {
+        print_char('~');
+        print_str(pwd + 10);
+    } else {
+        print_str(pwd);
+    }
+    
+    print_set_color(PRINT_COLOR_WHITE, PRINT_COLOR_BLACK);
+    print_str("$ ");
+    
+    color = saved_color;
+}
+void print_clear_char() {
+    col--;
+    clear_col(row);
+}
 void print_newline() {
     col = 0;
 
@@ -38,14 +73,15 @@ void print_newline() {
         return;
     }
 
-    for (size_t row = 1; row < NUM_ROWS; row++) {
+    for (size_t crow = 1; crow < NUM_ROWS; crow++) {
         for (size_t col = 0; col < NUM_COLS; col++) {
-            struct Char character = buffer[col + NUM_COLS * row];
-            buffer[col + NUM_COLS * (row - 1)] = character;
+            struct Char character = buffer[col + NUM_COLS * crow];
+            buffer[col + NUM_COLS * (crow - 1)] = character;
         }
     }
 
     clear_row(NUM_ROWS - 1);
+    row = NUM_ROWS - 1;
 }
 
 void print_char(char character) {
@@ -54,7 +90,7 @@ void print_char(char character) {
         return;
     }
 
-    if (col > NUM_COLS) {
+    if (col >= NUM_COLS) {
         print_newline();
     }
 

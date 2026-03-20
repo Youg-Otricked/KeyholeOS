@@ -21,8 +21,10 @@ enum {
 	PRINT_COLOR_YELLOW = 14,
 	PRINT_COLOR_WHITE = 15,
 };
-
+extern uint8_t color;
 void print_clear();
 void print_char(char character);
 void print_str(char* string);
 void print_set_color(uint8_t foreground, uint8_t background);
+void print_prompt();
+void print_clear_char();
