@@ -117,3 +117,13 @@ void print_str(char* str) {
 void print_set_color(uint8_t foreground, uint8_t background) {
     color = foreground + (background << 4);
 }
+void print_int(uint64_t n) {
+    if (n == 0) { print_char('0'); return; }
+    char buf[20];
+    int i = 0;
+    while (n > 0) {
+        buf[i++] = '0' + (n % 10);
+        n /= 10;
+    }
+    while (--i >= 0) print_char(buf[i]);
+}

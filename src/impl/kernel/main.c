@@ -67,7 +67,8 @@ static char history[HISTORY_SIZE][256];
 static int history_count = 0;   // total commands ever
 static int history_pos = 0;     // current navigation position
 static int page_start = 0;      // which command the array starts at
-
+#define PIT_FREQ 100
+#define PIT_DIVISOR 1193182 / PIT_FREQ
 void history_load_page(int start) {
     // read .ksh_history, find lines starting at 'start'
     char* data;
@@ -111,8 +112,11 @@ void cmd_reboot() {
     load_idt(&null_idt);
     asm volatile("int $0x00");
 }
+static uint64_t sudo_expires = 0;
+static volatile uint64_t ticks = 0;
 void execute(char* input) {
-    char* commands[] = {"clear", "help", "echo", "uname", "color", "reboot", "panic", "rm", "cd", "ls", "mkdir", "touch", "cat", "pwd"};
+    super_sudo_mode = 0;
+    char* commands[] = {"clear", "help", "echo", "uname", "color", "reboot", "panic", "rm", "cd", "ls", "mkdir", "touch", "cat", "pwd", "uptime", "rmdir", "mv", "cp"};
     const int num_commands = sizeof(commands) / sizeof(commands[0]);
     char tokens[16][64];  // 16 tokens, each up to 64 chars
     int token_count = 0;
@@ -134,16 +138,6 @@ void execute(char* input) {
     token_count++;
     int redirect = 0;
     char* redirect_file = NULL;
-    if (input[0] != '\0') {
-        strcpy(history[history_count % HISTORY_SIZE], input);
-        history_count++;
-        history_pos = history_count;
-        
-        char history_entry[256];
-        strcpy(history_entry, input);
-        strcat(history_entry, "\n");
-        vfs_write("/home/root/.ksh_history", history_entry, 1);
-    }
     for (int i = 0; i < token_count; i++) {
         if (strcmp(tokens[i], ">>") == 0 && i + 1 < token_count) {
             redirect = 2;
@@ -157,7 +151,35 @@ void execute(char* input) {
             break;
         }
     }
-    if (strcmp(tokens[0], "clear") == 0) {
+    if (sudo_expires > 0 && ticks > sudo_expires) {
+        sudo_mode = 0;
+        sudo_expires = 0;
+    }
+    if (input[0] != '\0' && !sudo_mode) {
+        strcpy(history[history_count % HISTORY_SIZE], input);
+        history_count++;
+        history_pos = history_count;
+        
+        char history_entry[256];
+        strcpy(history_entry, input);
+        strcat(history_entry, "\n");
+        vfs_write("/home/root/.ksh_history", history_entry, 1);
+    }
+    if (strcmp(tokens[0], "sudo") == 0) {
+        if (token_count < 2) {
+            print_str("sudo: missing command\n");
+            return;
+        }
+        sudo_mode = 1;
+        sudo_expires = ticks + (PIT_FREQ * 60);
+        char sudo_input[256];
+        sudo_input[0] = '\0';
+        for (int i = 1; i < token_count; i++) {
+            if (i > 1) strcat(sudo_input, " ");
+            strcat(sudo_input, tokens[i]);
+        }
+        execute(sudo_input);
+    } else if (strcmp(tokens[0], "clear") == 0) {
         print_clear();
     } else if (strcmp(tokens[0], "echo") == 0) {
         char output[512];
@@ -168,7 +190,20 @@ void execute(char* input) {
         }
         
         if (redirect) {
-            vfs_write(redirect_file, output, redirect == 2);
+            int result = vfs_write(redirect_file, output, redirect == 2);
+            if (result == -1) {
+                print_str("echo: no such file or directory: ");
+                print_str(redirect_file);
+                print_char('\n');
+            } else if (result == -2) {
+                print_str("echo: is a directory: ");
+                print_str(redirect_file);
+                print_char('\n');
+            } else if (result == -3) {
+                print_str("echo: permission denied: ");
+                print_str(redirect_file);
+                print_char('\n');
+            }
         } else {
             print_str(output);
             print_char('\n');
@@ -185,6 +220,9 @@ void execute(char* input) {
     } else if (strcmp(tokens[0], "reboot") == 0) {
         cmd_reboot();
     } else if (strcmp(tokens[0], "panic") == 0) {
+        if (!sudo_mode) {
+            print_str("panic: requires `sudo`\n");
+        }
         print_str("Kernel panic - system halted\n");
         volatile int x = 1 / 0;
     } else if (strcmp(tokens[0], "color") == 0) {
@@ -213,17 +251,47 @@ void execute(char* input) {
         }
     } else if (strcmp(tokens[0], "rm") == 0) {
         if (token_count < 2) {
-            print_str("rm takes 1 arguments (rm <path>)\n");
+            print_str("rm: missing operand\n");
         } else {
-            int result = vfs_rm(tokens[1]);
-            if (result == -1) {
-                print_str("rm: no such file or directory: ");
-                print_str(tokens[1]);
-                print_char('\n');
-            } else if (result == -2) {
-                print_str("rm: not a file (did you forget `-r`?): ");
-                print_str(tokens[1]);
-                print_char('\n');
+            int recursive = 0;
+            char* path = NULL;
+            for (int i = 1; i < token_count; i++) {
+                if (strcmp(tokens[i], "-r") == 0 || strcmp(tokens[i], "-rf") == 0) {
+                    recursive = 1;
+                } else if (strcmp(tokens[i], "--no-preserve-root") == 0) {
+                    super_sudo_mode = 1;
+                } else {
+                    path = tokens[i];
+                }
+            }
+            if (path == NULL) {
+                print_str("rm: missing operand\n");
+            } else {
+                int result;
+                if (recursive) {
+                    result = vfs_rm_r(path);
+                } else {
+                    result = vfs_rm(path);
+                }
+                if (result == -1) {
+                    print_str("rm: no such file or directory: ");
+                    print_str(path);
+                    print_char('\n');
+                } else if (result == -2) {
+                    print_str("rm: is a directory (use -r): ");
+                    print_str(path);
+                    print_char('\n');
+                } else if (result == -3) {
+                    print_str("rm: permission denied: ");
+                    print_str(path);
+                    print_char('\n');
+                } else if (result == -4) {
+                    print_str("rm: cannot remove `");
+                    print_str(path);
+                    print_str("`: resource busy\n");
+                } else if (result == -5) {
+                    print_str("rm: it is dangerous to operate recursively on '/'\nrm: use --no-preserve-root to override this failsafe\n");
+                } 
             }
         }
     } else if (strcmp(tokens[0], "cat") == 0) {
@@ -252,29 +320,46 @@ void execute(char* input) {
             if (strcmp(tokens[i], "-a") == 0) show_all = 1;
             else path = tokens[i];
         }
-        struct Node* child = vfs_ls(path);
-        if (child == NULL && token_count > 1) {
-            struct Node* node = resolve_path(tokens[1]);
-            if (node == NULL) {
-                print_str("ls: cannot access '");
-                print_str(tokens[1]);
-                print_str("': No such file or directory\n");
+        int recursive = 0;
+        for (int i = 1; i < token_count; i++) {
+            if (strcmp(tokens[i], "-R") == 0) recursive = 1;
+        }
+
+        if (recursive) {
+            if (strcmp(path, "") || strcmp(path, " ")) {
+                path = ".";
+            }
+            struct Node* dir = path ? resolve_path(path) : current_dir;
+            if (dir == NULL || dir->type != VFS_DIRECTORY) {
+                print_str("ls: not a directory\n");
+            } else {
+                ls_recursive(dir, path ? path : ".", show_all);
             }
         } else {
-            uint8_t saved = color;
-            while (child != NULL) {
-                if (child->type == VFS_DIRECTORY) {
-                    print_set_color(PRINT_COLOR_BLUE, PRINT_COLOR_BLACK);
+            struct Node* child = vfs_ls(path);
+            if (child == NULL && token_count > 1) {
+                struct Node* node = resolve_path(tokens[1]);
+                if (node == NULL) {
+                    print_str("ls: cannot access '");
+                    print_str(tokens[1]);
+                    print_str("': No such file or directory\n");
                 }
-                if (child->name[0] != '.' || show_all) {
-                    print_str(child->name);
-                    print_set_color(saved & 0x0F, saved >> 4);
-                    print_char(' ');
+            } else {
+                uint8_t saved = color;
+                while (child != NULL) {
+                    if (child->type == VFS_DIRECTORY) {
+                        print_set_color(PRINT_COLOR_BLUE, PRINT_COLOR_BLACK);
+                    }
+                    if (child->name[0] != '.' || show_all) {
+                        print_str(child->name);
+                        print_set_color(saved & 0x0F, saved >> 4);
+                        print_char(' ');
+                    }
+                    child = child->next_sibling;
                 }
-                child = child->next_sibling;
+                print_char('\n');
+                color = saved;
             }
-            print_char('\n');
-            color = saved;
         }
     } else if (strcmp(tokens[0], "mkdir") == 0) {
         if (token_count < 2) {
@@ -304,13 +389,105 @@ void execute(char* input) {
         if (result == 0 && data != NULL) {
             print_str(data);
         }
+    } else if (strcmp(tokens[0], "uptime") == 0) {
+        uint64_t seconds = ticks / PIT_FREQ;
+        uint64_t minutes = seconds / 60;
+        seconds = seconds % 60;
+        print_int(minutes);
+        print_char(':');
+        print_int(seconds);
+        print_char('\n');
+    } else if (strcmp(tokens[0], "rmdir") == 0) {
+        if (token_count < 2) {
+            print_str("rmdir: missing operand\n");
+        } else {
+            int result = vfs_rmdir(tokens[1]);
+            if (result == -1) {
+                print_str("rmdir: no such directory: ");
+                print_str(tokens[1]);
+                print_char('\n');
+            } else if (result == -2) {
+                print_str("rmdir: not a directory: ");
+                print_str(tokens[1]);
+                print_char('\n');
+            } else if (result == -3) {
+                print_str("rmdir: directory not empty: ");
+                print_str(tokens[1]);
+                print_char('\n');
+            } else if (result == -4) {
+                print_str("rmdir: permission denied: ");
+                print_str(tokens[1]);
+                print_char('\n');
+            } else if (result == -5) {
+                print_str("rmdir: cannot remove `");
+                print_str(tokens[1]);
+                print_str("`: resource busy\n");
+            }
+        }
+    } else if (strcmp(tokens[0], "mv") == 0) {
+        if (token_count < 3) {
+            print_str("mv: missing operand (mv <src> <dest>)\n");
+        } else {
+            int result = vfs_mv(tokens[1], tokens[2]);
+            if (result == -1) {
+                print_str("mv: no such file or directory: ");
+                print_str(tokens[1]);
+                print_char('\n');
+            } else if (result == -3) {
+                print_str("mv: permission denied: ");
+                print_str(tokens[1]);
+                print_char('\n');
+            } else if (result == -4) {
+                print_str("mv: permission denied (destination): ");
+                print_str(tokens[2]);
+                print_char('\n');
+            }
+        }
+    } else if (strcmp(tokens[0], "cp") == 0) {
+        if (token_count < 3) {
+            print_str("cp: missing operand (cp <src> <dest>)\n");
+        } else {
+            int recursive = 0;
+            char* src = NULL;
+            char* dest = NULL;
+            for (int i = 1; i < token_count; i++) {
+                if (strcmp(tokens[i], "-r") == 0) recursive = 1;
+                else if (src == NULL) src = tokens[i];
+                else dest = tokens[i];
+            }
+            if (src == NULL || dest == NULL) {
+                print_str("cp: missing operand (cp <src> <dest>)\n");
+            } else {
+                int result;
+                if (recursive) {
+                    result = vfs_cp_r(src, dest);
+                } else {
+                    result = vfs_cp(src, dest);
+                }
+                if (result == -1) {
+                    print_str("cp: no such file or directory: ");
+                    print_str(src);
+                    print_char('\n');
+                } else if (result == -2) {
+                    print_str("cp: is a directory (use -r): ");
+                    print_str(src);
+                    print_char('\n');
+                } else if (result == -3) {
+                    print_str("cp: permission denied: ");
+                    print_str(dest);
+                    print_char('\n');
+                }
+            }
+        }
     } else {
         print_str("Unknown command: ");
         print_str(input);
         print_char('\n');
+        return;
     }
 }
 int caps_lock = 0;
+int ctrl_held = 0;
 void interrupt_handler(uint64_t* regs) {
     uint64_t int_num = regs[15];
     // CPU exceptions (0-21)
@@ -328,6 +505,9 @@ void interrupt_handler(uint64_t* regs) {
         print_str("\nSystem halted. Reboot to continue.\n");
         while (1) { asm volatile("hlt"); }
     }
+    if (int_num == 32) {  // timer
+        ticks++;
+    }
     if (int_num == 33) {
         const uint8_t scancode = inb(0x60);
         if (scancode == 0x3A) {  // caps lock
@@ -337,6 +517,16 @@ void interrupt_handler(uint64_t* regs) {
         }
         if (scancode == 0x2A || scancode == 0x36) {
             shift_held = 1;
+            pic_eoi(int_num - 32);
+            return;
+        }
+        if (scancode == 0x1D) {
+            ctrl_held = 1;
+            pic_eoi(int_num - 32);
+            return;
+        }
+        if ((scancode & 0x7F) == 0x1D && (scancode & 0x80)) {
+            ctrl_held = 0;
             pic_eoi(int_num - 32);
             return;
         }
@@ -354,9 +544,36 @@ void interrupt_handler(uint64_t* regs) {
             pic_eoi(int_num - 32);
             return;
         }
-
+        if (ctrl_held && scancode < 128) {
+            if (scancode == 0x2E) {
+                print_str("^C\n");
+                input_pos = 0;
+                input_buffer[0] = '\0';
+                print_prompt();
+                pic_eoi(int_num - 32);
+                return;
+            }
+            if (scancode == 0x26) {  // l = clear screen
+                print_clear();
+                print_prompt();
+                pic_eoi(int_num - 32);
+                return;
+            }
+            pic_eoi(int_num - 32);
+            return;
+        }
         if (extended) {
             extended = 0;
+            if (scancode == 0x1D) {  // right ctrl press
+                ctrl_held = 1;
+                pic_eoi(int_num - 32);
+                return;
+            }
+            if (scancode == 0x9D) {  // right ctrl release
+                ctrl_held = 0;
+                pic_eoi(int_num - 32);
+                return;
+            }
             if (scancode == 0x48) {  // up arrow
                 if (history_pos > 0) {
                     history_pos--;
@@ -513,6 +730,9 @@ void kernel_main() {
     print_clear();
     heap_init();
     init_filesystem();
+    outb(0x43, 0x36);
+    outb(0x40, PIT_DIVISOR & 0xFF);
+    outb(0x40, (PIT_DIVISOR >> 8) & 0xFF);
     print_set_color(PRINT_COLOR_YELLOW, PRINT_COLOR_BLACK);
     print_str("Welcome to KeyholeOS\n");
     print_set_color(PRINT_COLOR_WHITE, PRINT_COLOR_BLACK);
