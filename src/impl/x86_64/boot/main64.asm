@@ -123,7 +123,6 @@ long_mode_start:
     mov es, ax
     mov fs, ax
     mov gs, ax ; IDK it needs 0 in all d segments to work i guess?
-    
     call kernel_main
 .halt:
     hlt

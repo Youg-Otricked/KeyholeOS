@@ -8,6 +8,13 @@ section .multiboot_header
         dd header_end - header_start ; header length. Ok so this actually makes sense YAY!
         ; checksum
         dd 0x100000000 - (0xe85250d6 + 0 + (header_end - header_start))
+        ; information request tag
+        dw 1
+        dw 0
+        dd 12
+        dd 6
+        ; padding for alignment
+        dd 0
         ; end tag
         dw 0 ; W
         dw 0 ; T

@@ -4,6 +4,7 @@
 #include "string.h"
 #include "vfs.h"
 #include "kmemory.h"
+#include "pmm.h"
 const char scancode_to_ascii[128] = {
     0, 0, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', 0,
     0, 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
@@ -479,6 +480,19 @@ void execute(char* input) {
                 }
             }
         }
+    } else if (strcmp(tokens[0], "whoami") == 0) {
+        print_str("root\n");
+    } else if (strcmp(tokens[0], "hostname") == 0) {
+        char* data;
+        int result = vfs_cat("/etc/hostname", &data);
+        if (result == 0 && data != NULL) {
+            print_str(data);
+            print_char('\n');
+        }
+    } else if (strcmp(tokens[0], "free") == 0) {
+        print_str("Total: "); print_int(total_pages * 4); print_str(" KB\n");
+        print_str("Used:  "); print_int(used_pages * 4); print_str(" KB\n");
+        print_str("Free:  "); print_int((total_pages - used_pages) * 4); print_str(" KB\n");
     } else {
         print_str("Unknown command: ");
         print_str(input);
@@ -680,7 +694,7 @@ extern void isr45();
 extern void isr46();
 extern void isr47();
 
-void kernel_main() {
+void kernel_main(uint64_t multiboot_addr) {
     outb(0x21, 0xFF);
     outb(0xA1, 0xFF);
     
@@ -728,6 +742,7 @@ void kernel_main() {
     idt_set_entry(47, (uint64_t)isr47);
     load_idt(&idtp);
     print_clear();
+    pmm_setup(multiboot_addr);
     heap_init();
     init_filesystem();
     outb(0x43, 0x36);

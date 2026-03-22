@@ -6,15 +6,17 @@ section .text
 _start:
     cli
     mov esp, stack_top
-
-    call check_multiboot
+    push ebx            ; save multiboot info on stack
     
+    call check_multiboot
     call check_cpuid
+
     call check_long_mode
 
     call setup_page_tables
     call enable_paging
-
+    
+    pop edi             ; restore to edi
     lgdt [gdt64.pointer]
     jmp gdt64.code_segment:long_mode_start
     hlt
