@@ -65,23 +65,55 @@ check_long_mode:
 
 setup_page_tables:
     mov eax, page_table_l3
-    or eax, 0b11 ; present, writeable
+    or eax, 0b11
     mov [page_table_l4], eax
-
     mov eax, page_table_l2
-    or eax, 0b11 ; present, writeable
+    or eax, 0b11
     mov [page_table_l3], eax
+    mov eax, page_table_l1_0
+    or eax, 0b11
+    mov [page_table_l2], eax
 
+    mov eax, page_table_l1_1
+    or eax, 0b11
+    mov [page_table_l2 + 8], eax
+
+    mov eax, page_table_l1_2
+    or eax, 0b11
+    mov [page_table_l2 + 16], eax
+
+    mov eax, page_table_l1_3
+    or eax, 0b11
+    mov [page_table_l2 + 24], eax
     mov ecx, 0
 .loop:
-
-    mov eax, 0x200000
+    mov eax, 0x1000
     mul ecx
-    or eax, 0b10000011 ; present, writeable , huge page again.
-    mov [page_table_l2 + ecx * 8], eax
-
-    inc ecx
+    or eax, 0b11
     cmp ecx, 512
+    jl .t0
+    cmp ecx, 1024
+    jl .t1
+    cmp ecx, 1536
+    jl .t2
+    jmp .t3
+.t0:
+    mov [page_table_l1_0 + ecx * 8], eax
+    jmp .next
+.t1:
+    lea edx, [ecx - 512]
+    mov [page_table_l1_1 + edx * 8], eax
+    jmp .next
+.t2:
+    lea edx, [ecx - 1024]
+    mov [page_table_l1_2 + edx * 8], eax
+    jmp .next
+.t3:
+    lea edx, [ecx - 1536]
+    mov [page_table_l1_3 + edx * 8], eax
+.next:
+    inc ecx
+    cmp ecx, 2048
     jne .loop
 
     ret
@@ -118,6 +150,7 @@ error:
     hlt
 
 section .bss
+    global stack_top
     align 4096
     page_table_l4:
         resb 4096
@@ -125,14 +158,29 @@ section .bss
         resb 4096
     page_table_l2:
         resb 4096
+    page_table_l1_0:
+        resb 4096
+    page_table_l1_1:
+        resb 4096
+    page_table_l1_2:
+        resb 4096
+    page_table_l1_3:
+        resb 4096
     stack_bottom:
         resb 4096 * 4
     stack_top:
 section .rodata
+    global gdt64
     gdt64:
         dq 0                                                    ; null
     .code_segment: equ $ - gdt64
         dq (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53)     ; code
+        dq 0
+        dq 0
+    .user_data: equ $ - gdt64
+    dq (1 << 44) | (1 << 47) | (1 << 41) | (3 << 45)     ; user data (0x20) DPL=3
+    .user_code: equ $ - gdt64
+        dq (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) | (3 << 45) ; user code (0x28) DPL=3
     .pointer:
         dw $ - gdt64 - 1
         dq gdt64

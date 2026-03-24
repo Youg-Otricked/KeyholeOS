@@ -13,6 +13,22 @@ struct Char* buffer = (struct Char*) 0xb8000;
 size_t col = 0;
 size_t row = 0;
 uint8_t color = PRINT_COLOR_WHITE | PRINT_COLOR_BLACK << 4;
+char* print_uint64_as_hex(uint64_t num) {
+    static char buffer[17]; 
+    static const char hex_chars[] = "0123456789ABCDEF";
+    
+    char *ptr = &buffer[16];
+    *ptr = '\0';
+    if (num == 0) {
+        *--ptr = '0';
+        return ptr;
+    }
+    while (num > 0) {
+        *--ptr = hex_chars[num & 0xF];
+        num >>= 4;
+    }
+    print_str(ptr);
+}
 
 void clear_row(size_t curr_row) {
     struct Char empty = (struct Char) {

@@ -5,6 +5,9 @@
 #include "vfs.h"
 #include "kmemory.h"
 #include "pmm.h"
+#include "vmm.h"
+#include "tss.h"
+#include "userspacetest.h"
 const char scancode_to_ascii[128] = {
     0, 0, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', 0,
     0, 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
@@ -38,7 +41,7 @@ void idt_set_entry(int index, uint64_t handler) {
     idt[index].offset_low  = handler & 0xFFFF;
     idt[index].selector    = 0x08;
     idt[index].ist         = 0;
-    idt[index].type_attr   = 0x8E;
+    idt[index].type_attr   = 0xEE;  // DPL=3 so ring 3 can interrupt
     idt[index].offset_mid  = (handler >> 16) & 0xFFFF;
     idt[index].offset_high = (handler >> 32) & 0xFFFFFFFF;
     idt[index].zero        = 0;
@@ -117,26 +120,34 @@ static uint64_t sudo_expires = 0;
 static volatile uint64_t ticks = 0;
 void execute(char* input) {
     super_sudo_mode = 0;
-    char* commands[] = {"clear", "help", "echo", "uname", "color", "reboot", "panic", "rm", "cd", "ls", "mkdir", "touch", "cat", "pwd", "uptime", "rmdir", "mv", "cp"};
+    char* commands[] = {"clear", "help", "echo", "uname", "color", "reboot", "panic", "rm", "cd", "ls", "mkdir", "touch", "cat", "pwd", "uptime", "rmdir", "mv", "cp", "whoami", "hostname", "free", "neofetch", "date", "memmap", "memtest"};
     const int num_commands = sizeof(commands) / sizeof(commands[0]);
-    char tokens[16][64];  // 16 tokens, each up to 64 chars
     int token_count = 0;
-    int pos = 0;
-    for (int i = 0; i < 16; i++) {
-        tokens[i][0] = '\0';
-    }
-    for (int i = 0; input[i] != '\0'; i++) {
-        if (input[i] == ' ') {
-            tokens[token_count][pos] = '\0';
-            token_count++;
-            pos = 0;
+    int len = strlen(input);
+    int in_token = 0;
+    for (int i = 0; i <= len; i++) {
+        if (input[i] == ' ' || input[i] == '\0') {
+            if (in_token) { token_count++; in_token = 0; }
         } else {
-            tokens[token_count][pos] = input[i];
-            pos++;
+            in_token = 1;
         }
     }
-    tokens[token_count][pos] = '\0';
-    token_count++;
+    char** tokens = (char**)kmalloc(token_count * sizeof(char*));
+    int idx = 0;
+    char* start = input;
+    
+    for (int i = 0; i <= len; i++) {
+        if (input[i] == ' ' || input[i] == '\0') {
+            if (input + i > start) {
+                int tlen = (input + i) - start;
+                tokens[idx] = (char*)kmalloc(tlen + 1);
+                kmemcpy(tokens[idx], start, tlen);
+                tokens[idx][tlen] = '\0';
+                idx++;
+            }
+            start = input + i + 1;
+        }
+    }
     int redirect = 0;
     char* redirect_file = NULL;
     for (int i = 0; i < token_count; i++) {
@@ -493,12 +504,92 @@ void execute(char* input) {
         print_str("Total: "); print_int(total_pages * 4); print_str(" KB\n");
         print_str("Used:  "); print_int(used_pages * 4); print_str(" KB\n");
         print_str("Free:  "); print_int((total_pages - used_pages) * 4); print_str(" KB\n");
+    } else if (strcmp(tokens[0], "memtest") == 0) {
+        print_str("Allocating physical page...\n");
+        void* page = pmm_alloc();
+        if (page == NULL) {
+            print_str("memtest: pmm_alloc failed\n");
+        } else {
+            uint64_t virt = 0x400000;
+            print_str("Mapping to 0x400000...\n");
+            vmm_map(virt, (uint64_t)page, VMM_PRESENT | VMM_WRITABLE);
+            
+            volatile uint64_t* ptr = (volatile uint64_t*)virt;
+            *ptr = 0xDEADBEEF;
+            
+            if (*ptr == 0xDEADBEEF) {
+                print_str("Write/Read: PASS\n");
+            } else {
+                print_str("Write/Read: FAIL\n");
+            }
+            
+            vmm_unmap(virt);
+            pmm_free(page);
+            print_str("Unmapped and freed. memtest complete.\n");
+        }
+    } else if (strcmp(tokens[0], "memmap") == 0) {
+        print_str("--- Physical Memory ---\n");
+        print_str("Total: ");
+        print_int(total_pages * 4);
+        print_str(" KB\n");
+        print_str("Used:  ");
+        print_int(used_pages * 4);
+        print_str(" KB\n");
+        print_str("Free:  ");
+        print_int((total_pages - used_pages) * 4);
+        print_str(" KB\n");
+        print_str("--- Heap ---\n");
+        print_str("Start: 0x");
+        print_int(heap_start);
+        print_str("\nEnd:   0x");
+        print_int(heap_end);
+        print_str("\nSize:  ");
+        print_int((heap_end - heap_start) / 1024);
+        print_str(" KB\n");
+    } else if (strcmp(tokens[0], "date") == 0) {
+        uint64_t seconds = ticks / PIT_FREQ;
+        uint64_t hours = seconds / 3600;
+        uint64_t minutes = (seconds % 3600) / 60;
+        uint64_t secs = seconds % 60;
+        print_str("Up ");
+        print_int(hours);
+        print_str("h ");
+        print_int(minutes);
+        print_str("m ");
+        print_int(secs);
+        print_str("s since boot\n");
+    } else if (strcmp(tokens[0], "neofetch") == 0) {
+        uint8_t saved = color;
+        print_set_color(PRINT_COLOR_CYAN, PRINT_COLOR_BLACK);
+        print_str("  _  __          _           _      \n");
+        print_str(" | |/ /___ _   _| |__   ___ | | ___ \n");
+        print_str(" | ' // _ \\ | | | '_ \\ / _ \\| |/ _ \\\n");
+        print_str(" | . \\  __/ |_| | | | | (_) | |  __/\n");
+        print_str(" |_|\\_\\___|\\__, |_| |_|\\___/|_|\\___|  \n");
+        print_str("           |___/                     \n");
+        print_set_color(PRINT_COLOR_WHITE, PRINT_COLOR_BLACK);
+        print_str(" OS:      KeyholeOS V0.1.1:beta\n");
+        print_str(" Shell:   ksh\n");
+        print_str(" Uptime:  ");
+        uint64_t seconds = ticks / PIT_FREQ;
+        print_int(seconds / 60);
+        print_str("m ");
+        print_int(seconds % 60);
+        print_str("s\n");
+        print_str(" Memory:  ");
+        print_int(used_pages * 4);
+        print_str("/");
+        print_int(total_pages * 4);
+        print_str(" KB\n");
+        color = saved;
     } else {
         print_str("Unknown command: ");
         print_str(input);
         print_char('\n');
         return;
     }
+    for (int i = 0; i < token_count; i++) kfree(tokens[i]);
+    kfree(tokens);
 }
 int caps_lock = 0;
 int ctrl_held = 0;
@@ -513,7 +604,13 @@ void interrupt_handler(uint64_t* regs) {
             case 6:  print_str("INVALID OPCODE"); break;
             case 8:  print_str("DOUBLE FAULT"); break;
             case 13: print_str("GENERAL PROTECTION FAULT"); break;
-            case 14: print_str("PAGE FAULT"); break;
+            case 14: {
+                uint64_t fault_addr;
+                asm volatile("mov %%cr2, %0" : "=r"(fault_addr));
+                print_str("PAGE FAULT at 0x");
+                print_uint64_as_hex(fault_addr);
+                while(1) { asm volatile("hlt"); }
+            }
             default: print_str("CPU EXCEPTION"); break;
         }
         print_str("\nSystem halted. Reboot to continue.\n");
@@ -693,7 +790,7 @@ extern void isr44();
 extern void isr45();
 extern void isr46();
 extern void isr47();
-
+extern void jump_to_ring3(uint64_t entry, uint64_t user_stack); 
 void kernel_main(uint64_t multiboot_addr) {
     outb(0x21, 0xFF);
     outb(0xA1, 0xFF);
@@ -743,7 +840,9 @@ void kernel_main(uint64_t multiboot_addr) {
     load_idt(&idtp);
     print_clear();
     pmm_setup(multiboot_addr);
+    vmm_init();
     heap_init();
+    tss_install();
     init_filesystem();
     outb(0x43, 0x36);
     outb(0x40, PIT_DIVISOR & 0xFF);
@@ -752,4 +851,12 @@ void kernel_main(uint64_t multiboot_addr) {
     print_str("Welcome to KeyholeOS\n");
     print_set_color(PRINT_COLOR_WHITE, PRINT_COLOR_BLACK);
     print_prompt();
+    void* user_code_page = pmm_alloc();
+    vmm_map(0x600000, (uint64_t)user_code_page, VMM_PRESENT | VMM_WRITABLE | VMM_USER);
+    kmemcpy((void*)0x600000, (void*)user_function, 64);
+    void* user_stack_page = pmm_alloc();
+    vmm_map(0x800000, (uint64_t)user_stack_page, VMM_PRESENT | VMM_WRITABLE | VMM_USER);
+
+    // jump to user code at 0x600000
+    jump_to_ring3(0x600000, 0x800000 + 4096);
 }

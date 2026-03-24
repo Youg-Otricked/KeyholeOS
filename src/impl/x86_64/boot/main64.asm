@@ -7,7 +7,31 @@ section .text
     extern interrupt_handler
     global outb
     global inb
+    global read_cr3
+    global write_cr3
+    global invlpg
+    global load_tss
+    global jump_to_ring3
+jump_to_ring3:
+    mov ax, 0x20 | 3    ; user data selector with RPL=3
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
     
+    push 0x20 | 3
+    push rsi
+    pushfq
+    pop rax
+    or rax, 0x200
+    push rax
+    push 0x28 | 3
+    push rdi
+    iretq
+load_tss:
+    mov ax, di
+    ltr ax
+    ret
 outb:
     xor rdx, rdx
     mov dx, di
@@ -116,6 +140,15 @@ isr_no_err 44
 isr_no_err 45
 isr_no_err 46
 isr_no_err 47
+read_cr3:
+    mov rax, cr3
+    ret
+write_cr3:
+    mov cr3, rdi
+    ret
+invlpg:
+    invlpg [rdi]
+    ret
 long_mode_start:
     mov ax, 0
     mov ss, ax

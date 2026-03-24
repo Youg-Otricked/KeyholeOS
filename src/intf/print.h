@@ -29,3 +29,4 @@ void print_set_color(uint8_t foreground, uint8_t background);
 void print_prompt();
 void print_clear_char();
 void print_int(uint64_t n);
+char* print_uint64_as_hex(uint64_t num);
