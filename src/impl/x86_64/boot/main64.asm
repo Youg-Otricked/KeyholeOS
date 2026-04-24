@@ -12,6 +12,48 @@ section .text
     global invlpg
     global load_tss
     global jump_to_ring3
+    global wrmsr
+    global rdmsr
+    global isr128
+    global syscall_entry
+    extern interrupt_handler
+    extern handle_syscall
+syscall_entry:
+    push rcx
+    push r11
+    push rax
+    push rdi
+    push rsi
+    push rdx
+    mov rcx, rdx
+    mov rdx, rsi
+    mov rsi, rdi
+    mov rdi, rax
+    call handle_syscall
+    pop rdx
+    pop rsi
+    pop rdi
+    add rsp, 8
+    pop r11
+    pop rcx
+    o64 sysret
+isr128:
+    push 0
+    push 128
+    jmp isr_common
+wrmsr:
+    mov ecx, edi
+    mov eax, esi
+    shr rsi, 32
+    mov edx, esi
+    wrmsr
+    ret
+rdmsr:
+    mov ecx, edi
+    rdmsr
+    shl rdx, 32
+    or rax, rdx
+    ret
 jump_to_ring3:
     mov ax, 0x20 | 3    ; user data selector with RPL=3
     mov ds, ax

@@ -19,7 +19,9 @@ _start:
     pop edi             ; restore to edi
     lgdt [gdt64.pointer]
     jmp gdt64.code_segment:long_mode_start
+.halt:
     hlt
+    jmp .halt
     ; goal: print syscall
 check_multiboot:
     cmp eax, 0x36d76289 ; tf another magic number whats 920085129 doing here
@@ -178,7 +180,7 @@ section .rodata
         dq 0
         dq 0
     .user_data: equ $ - gdt64
-    dq (1 << 44) | (1 << 47) | (1 << 41) | (3 << 45)     ; user data (0x20) DPL=3
+        dq (1 << 44) | (1 << 47) | (1 << 41) | (3 << 45)     ; user data (0x20) DPL=3
     .user_code: equ $ - gdt64
         dq (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) | (3 << 45) ; user code (0x28) DPL=3
     .pointer:

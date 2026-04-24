@@ -8,6 +8,7 @@
 #include "vmm.h"
 #include "tss.h"
 #include "userspacetest.h"
+#include "syscall.h"
 const char scancode_to_ascii[128] = {
     0, 0, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', 0,
     0, 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
@@ -118,6 +119,7 @@ void cmd_reboot() {
 }
 static uint64_t sudo_expires = 0;
 static volatile uint64_t ticks = 0;
+
 void execute(char* input) {
     super_sudo_mode = 0;
     char* commands[] = {"clear", "help", "echo", "uname", "color", "reboot", "panic", "rm", "cd", "ls", "mkdir", "touch", "cat", "pwd", "uptime", "rmdir", "mv", "cp", "whoami", "hostname", "free", "neofetch", "date", "memmap", "memtest"};
@@ -593,6 +595,7 @@ void execute(char* input) {
 }
 int caps_lock = 0;
 int ctrl_held = 0;
+
 void interrupt_handler(uint64_t* regs) {
     uint64_t int_num = regs[15];
     // CPU exceptions (0-21)
@@ -618,6 +621,13 @@ void interrupt_handler(uint64_t* regs) {
     }
     if (int_num == 32) {  // timer
         ticks++;
+    }
+    if (int_num == 128) {
+        uint64_t syscall_num = regs[14];  // rax
+        uint64_t arg1 = regs[9];          // rdi
+        uint64_t arg2 = regs[10];         // rsi
+        uint64_t arg3 = regs[11];         // rdx
+        regs[14] = handle_syscall(syscall_num, arg1, arg2, arg3);
     }
     if (int_num == 33) {
         const uint8_t scancode = inb(0x60);
@@ -790,6 +800,7 @@ extern void isr44();
 extern void isr45();
 extern void isr46();
 extern void isr47();
+extern void isr128();
 extern void jump_to_ring3(uint64_t entry, uint64_t user_stack); 
 void kernel_main(uint64_t multiboot_addr) {
     outb(0x21, 0xFF);
@@ -837,8 +848,10 @@ void kernel_main(uint64_t multiboot_addr) {
     idt_set_entry(45, (uint64_t)isr45);
     idt_set_entry(46, (uint64_t)isr46);
     idt_set_entry(47, (uint64_t)isr47);
+    idt_set_entry(0x80, (uint64_t)isr128);
     load_idt(&idtp);
     print_clear();
+    syscall_init();
     pmm_setup(multiboot_addr);
     vmm_init();
     heap_init();
@@ -858,5 +871,13 @@ void kernel_main(uint64_t multiboot_addr) {
     vmm_map(0x800000, (uint64_t)user_stack_page, VMM_PRESENT | VMM_WRITABLE | VMM_USER);
 
     // jump to user code at 0x600000
-    jump_to_ring3(0x600000, 0x800000 + 4096);
+    for (int i = 0; i < 17; i++) {
+        void* page = pmm_alloc();
+        vmm_map(0x800000 + (i * 4096), (uint64_t)page, VMM_PRESENT | VMM_WRITABLE | VMM_USER);
+    }
+    print_str("Code: 0x600000\n");
+    print_str("Stack: ");
+    print_int(0x800000 + (16 * 4096));
+    print_char('\n');
+    jump_to_ring3(0x600000, 0x800000 + (16 * 4096));
 }
