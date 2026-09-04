@@ -1,4 +1,5 @@
 #include "userspacetest.h"
+
 void user_function() {
     // sys_write(1, "Hello from ring 3!\n", 19)
     asm volatile(
@@ -6,7 +7,7 @@ void user_function() {
         "mov $1, %%rdi\n"    // fd = stdout
         "mov %0, %%rsi\n"    // buffer
         "mov $19, %%rdx\n"   // length
-        "int $0x80\n"
+        "syscall\n"
         :
         : "r"("Hello from ring 3!\n")
         : "rax", "rdi", "rsi", "rdx"
@@ -16,9 +17,10 @@ void user_function() {
     asm volatile(
         "mov $60, %%rax\n"    // syscall 0 = exit
         "mov $0, %%rdi\n"    // exit code 0
-        "int $0x80\n" /// WHY GPF ON syscall AAAAAAAAAAAAAAAA
+        "syscall\n" /// WHY GPF ON syscall AAAAAAAAAAAAAAAA
         :
         :
         : "rax", "rdi"
     );
+
 }

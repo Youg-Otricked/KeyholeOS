@@ -55,19 +55,19 @@ rdmsr:
     or rax, rdx
     ret
 jump_to_ring3:
-    mov ax, 0x20 | 3    ; user data selector with RPL=3
+    mov ax, 0x28 | 3    ; user data selector with RPL=3
     mov ds, ax
     mov es, ax
     mov fs, ax
     mov gs, ax
     
-    push 0x20 | 3
+    push 0x28 | 3
     push rsi
     pushfq
     pop rax
     or rax, 0x200
     push rax
-    push 0x28 | 3
+    push 0x30 | 3
     push rdi
     iretq
 load_tss:

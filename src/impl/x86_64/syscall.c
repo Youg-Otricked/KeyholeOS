@@ -7,7 +7,7 @@ int64_t sys_exit(uint64_t code) {
     print_char('\n');
     print_prompt();
     asm volatile("sti");
-    while(1) { asm volatile("hlt"); }
+    for (;;) {asm volatile("hlt");}
     return 0;
 }
 

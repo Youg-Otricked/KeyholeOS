@@ -606,7 +606,36 @@ void interrupt_handler(uint64_t* regs) {
             case 0:  print_str("DIVIDE BY ZERO"); break;
             case 6:  print_str("INVALID OPCODE"); break;
             case 8:  print_str("DOUBLE FAULT"); break;
-            case 13: print_str("GENERAL PROTECTION FAULT"); break;
+            case 13:
+                print_str("GENERAL PROTECTION FAULT\n");
+
+                print_str("error = 0x");
+                print_uint64_as_hex(regs[16]);
+                print_char('\n');
+
+                print_str("rip   = 0x");
+                print_uint64_as_hex(regs[17]);
+                print_char('\n');
+
+                print_str("cs    = 0x");
+                print_uint64_as_hex(regs[18]);
+                print_char('\n');
+
+                print_str("rflags= 0x");
+                print_uint64_as_hex(regs[19]);
+                print_char('\n');
+
+                print_str("rsp   = 0x");
+                print_uint64_as_hex(regs[20]);
+                print_char('\n');
+
+                print_str("ss    = 0x");
+                print_uint64_as_hex(regs[21]);
+                print_char('\n');
+
+                while (1) {
+                    asm volatile("cli; hlt");
+                }
             case 14: {
                 uint64_t fault_addr;
                 asm volatile("mov %%cr2, %0" : "=r"(fault_addr));

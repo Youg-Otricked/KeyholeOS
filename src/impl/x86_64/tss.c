@@ -18,12 +18,12 @@ void tss_install(void) {
     uint16_t tss_limit = sizeof(struct TSS) - 1;
     extern uint8_t gdt64;
     uint64_t* gdt = (uint64_t*)&gdt64;
-    gdt[2] = (tss_limit & 0xFFFF) |
+    gdt[3] = (tss_limit & 0xFFFF) |
              ((tss_addr & 0xFFFF) << 16) |
              ((tss_addr >> 16 & 0xFF) << 32) |
              ((uint64_t)0x89 << 40) |
              ((uint64_t)(tss_limit >> 16 & 0xF) << 48) |
              ((tss_addr >> 24 & 0xFF) << 56);
-    gdt[3] = (tss_addr >> 32) & 0xFFFFFFFF;
-    load_tss(0x10);
+    gdt[4] = (tss_addr >> 32) & 0xFFFFFFFF;
+    load_tss(0x18);
 }

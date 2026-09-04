@@ -174,15 +174,19 @@ section .bss
 section .rodata
     global gdt64
     gdt64:
-        dq 0                                                    ; null
-    .code_segment: equ $ - gdt64
-        dq (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53)     ; code
         dq 0
-        dq 0
-    .user_data: equ $ - gdt64
-        dq (1 << 44) | (1 << 47) | (1 << 41) | (3 << 45)     ; user data (0x20) DPL=3
-    .user_code: equ $ - gdt64
-        dq (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) | (3 << 45) ; user code (0x28) DPL=3
-    .pointer:
-        dw $ - gdt64 - 1
-        dq gdt64
+        .code_segment: equ $ - gdt64
+            dq (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53)
+        .data_segment: equ $ - gdt64
+            dq (1 << 44) | (1 << 47) | (1 << 41)
+        .tss: equ $ - gdt64
+            dq 0
+            dq 0
+        .user_data: equ $ - gdt64
+            dq (1 << 44) | (1 << 47) | (1 << 41) | (3 << 45)
+        .user_code: equ $ - gdt64
+            dq (1 << 43) | (1 << 44) | (1 << 47) | (1 << 53) | (3 << 45)
+        .pointer:
+            dw $ - gdt64 - 1
+            dq gdt64
+

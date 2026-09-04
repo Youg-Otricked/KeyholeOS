@@ -1,0 +1,20 @@
+[
+  {
+    "arguments": [
+      "clang",
+      "-target", "x86_64-unknown-none-elf",
+      "-c",
+      "-I", "src/intf",
+      "-ffreestanding",
+      "-mno-red-zone",
+      "-fno-omit-frame-pointer",
+      "-nostdinc",
+      "-isystem", "/path/to/your/cross/include",
+      "-o", "build/kernel/main.o",
+      "src/impl/kernel/main.c"
+    ], 
+    "directory": "/home/luca/kernel",
+    "file": "/home/luca/kernel/src/impl/kernel/main.c",
+    "output": "/home/luca/kernel/build/kernel/main.o"
+  }
+]

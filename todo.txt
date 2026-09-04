@@ -1,0 +1,8 @@
+#1 PRIORITY: Running Binarys
+1. Proccesses
+1. Proccess Struct
+2. Give each proccess a page table
+3. Give each proccess a kernel stack
+4. Context Switching, round-robin, prioritys, earliest eligible virtual deadline first, sleeping, signals (memory protection)
+5. Running ELFS
+#2 Priority: Text editior
